@@ -46,18 +46,24 @@ const (
 
 // Target refers to a singular HTTP or HTTPS endpoint.
 type Target struct {
-	// Labels before any processing.
+	// 记录了target信息经过Relabel处理前的Label集合
+	// 使用服务发现的时候，会携带多个以"__meta_"开头的Label，也会记录到集合中
 	discoveredLabels labels.Labels
-	// Any labels that are added to this target and its metrics.
+	// 记录经过Relabel处理后的Label集合，该字段记录的集合会被追加到时序中进行持久化
 	labels labels.Labels
-	// Additional URL parameters that are part of the target URL.
+	// 目标抓取监控数据，需要携带的HTTP参数
 	params url.Values
 
 	mtx                sync.RWMutex
+	// 最后一次抓取产生的异常
 	lastError          error
+	// 最近一次从Target抓取监控数据产生的异常
 	lastScrape         time.Time
+	// 最近一次从Target抓取监控的耗时
 	lastScrapeDuration time.Duration
+	// 标记Target是否在线
 	health             TargetHealth
+	// 从target抓取到所有指标的元信息
 	metadata           MetricMetadataStore
 }
 
@@ -77,17 +83,25 @@ func (t *Target) String() string {
 
 // MetricMetadataStore represents a storage for metadata.
 type MetricMetadataStore interface {
+	// 全部指标的元数据
 	ListMetadata() []MetricMetadata
+	// 某个指标的元数据
 	GetMetadata(metric string) (MetricMetadata, bool)
+	// 大小
 	SizeMetadata() int
+	// 长度
 	LengthMetadata() int
 }
 
 // MetricMetadata is a piece of metadata for a metric.
 type MetricMetadata struct {
+	// 指标名称
 	Metric string
+	// 指标类型
 	Type   textparse.MetricType
+	// 帮助信息
 	Help   string
+	// 指标的单位
 	Unit   string
 }
 
@@ -152,8 +166,7 @@ func (t *Target) hash() uint64 {
 	return h.Sum64()
 }
 
-// offset returns the time until the next scrape cycle for the target.
-// It includes the global server jitterSeed for scrapes from multiple Prometheus to try to be at different times.
+// 计算prometheus server启动多久后，第一次从target中抓取监控数据(将第一次抓取的时间打散，防止同一时间大量抓取操作)
 func (t *Target) offset(interval time.Duration, jitterSeed uint64) time.Duration {
 	now := time.Now().UnixNano()
 
@@ -201,11 +214,13 @@ func (t *Target) SetDiscoveredLabels(l labels.Labels) {
 func (t *Target) URL() *url.URL {
 	params := url.Values{}
 
+	// 记录Target.params字段中的HTTP请求参数
 	for k, v := range t.params {
 		params[k] = make([]string, len(v))
 		copy(params[k], v)
 	}
 	for _, l := range t.labels {
+		// 如果包含，则会被当做HTTP请求参数记录到params中
 		if !strings.HasPrefix(l.Name, model.ParamLabelPrefix) {
 			continue
 		}
@@ -363,6 +378,7 @@ func PopulateLabels(lset labels.Labels, cfg *config.ScrapeConfig) (res, orig lab
 	lb := labels.NewBuilder(lset)
 
 	for _, l := range scrapeLabels {
+		// 添加不存在的默认Label
 		if lv := lset.Get(l.Name); lv == "" {
 			lb.Set(l.Name, l.Value)
 		}
@@ -370,11 +386,13 @@ func PopulateLabels(lset labels.Labels, cfg *config.ScrapeConfig) (res, orig lab
 	// Encode scrape query parameters as labels.
 	for k, v := range cfg.Params {
 		if len(v) > 0 {
+			// 添加ScrapeConfig配置中的Label, Label Name前面会添加"__param__"前缀
 			lb.Set(model.ParamLabelPrefix+k, v[0])
 		}
 	}
 
 	preRelabelLabels := lb.Labels()
+	// 进行relabel操作，其中会配置过滤Label以及Target
 	lset = relabel.Process(preRelabelLabels, cfg.RelabelConfigs...)
 
 	// Check if the target was dropped.
@@ -440,8 +458,7 @@ func PopulateLabels(lset labels.Labels, cfg *config.ScrapeConfig) (res, orig lab
 		return nil, nil, errors.Errorf("scrape timeout cannot be greater than scrape interval (%q > %q)", timeout, interval)
 	}
 
-	// Meta labels are deleted after relabelling. Other internal labels propagate to
-	// the target which decides whether they will be part of their label set.
+	// 将"__meta__"开头的Label全部清理掉
 	for _, l := range lset {
 		if strings.HasPrefix(l.Name, model.MetaLabelPrefix) {
 			lb.Del(l.Name)

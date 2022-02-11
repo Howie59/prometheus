@@ -219,8 +219,9 @@ func init() {
 	)
 }
 
-// scrapePool manages scrapes for sets of targets.
+// scrapePool 管理抓取一组targets
 type scrapePool struct {
+	// 向底层存储写入时序数据
 	appendable storage.Appendable
 	logger     log.Logger
 	cancel     context.CancelFunc
@@ -229,15 +230,16 @@ type scrapePool struct {
 	mtx    sync.Mutex
 	config *config.ScrapeConfig
 	client *http.Client
+	// 字段中的每个scrapeLoop实例都对应的activeTargets集合中的一个Target实例
 	loops  map[uint64]loop
 
 	targetMtx sync.Mutex
-	// activeTargets and loops must always be synchronized to have the same
-	// set of hashes.
+	// 记录需要抓取的Target
 	activeTargets  map[uint64]*Target
+	// 记录已经删除的Target
 	droppedTargets []*Target
 
-	// Constructor for new scrape loops. This is settable for testing convenience.
+	// 为指定的Target实例创建相应的scrapeLoop实例
 	newLoop func(scrapeLoopOptions) loop
 }
 
@@ -269,13 +271,13 @@ func newScrapePool(cfg *config.ScrapeConfig, app storage.Appendable, jitterSeed 
 	if logger == nil {
 		logger = log.NewNopLogger()
 	}
-
+	// 创建HTTP客户端，该scrapePool中的所有scrapeLoop都是用HTTP客户端抓取时序
 	client, err := config_util.NewClientFromConfig(cfg.HTTPClientConfig, cfg.JobName)
 	if err != nil {
 		targetScrapePoolsFailed.Inc()
 		return nil, errors.Wrap(err, "error creating HTTP client")
 	}
-
+	// 创建可共用的缓冲池
 	buffers := pool.New(1e3, 100e6, 3, func(sz int) interface{} { return make([]byte, 0, sz) })
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -289,7 +291,7 @@ func newScrapePool(cfg *config.ScrapeConfig, app storage.Appendable, jitterSeed 
 		logger:        logger,
 	}
 	sp.newLoop = func(opts scrapeLoopOptions) loop {
-		// Update the targets retrieval function for metadata to a new scrape cache.
+		// 为每个scrapeLoop实例绑定一个scrapeCache实例
 		cache := opts.cache
 		if cache == nil {
 			cache = newScrapeCache()
@@ -486,6 +488,7 @@ func (sp *scrapePool) Sync(tgs []*targetgroup.Group) {
 		}
 	}
 	sp.targetMtx.Unlock()
+	// 在sync()方法中为每个Target创建scrapeLoop实例，启动相应的goroutine
 	sp.sync(all)
 
 	targetSyncIntervalLength.WithLabelValues(sp.config.JobName).Observe(
@@ -644,6 +647,7 @@ func mutateSampleLabels(lset labels.Labels, target *Target, honor bool, rc []*re
 	targetLabels := target.Labels()
 
 	if honor {
+		// 保存抓取到的Label Name
 		for _, l := range targetLabels {
 			if !lset.Has(l.Name) {
 				lb.Set(l.Name, l.Value)
@@ -651,6 +655,7 @@ func mutateSampleLabels(lset labels.Labels, target *Target, honor bool, rc []*re
 		}
 	} else {
 		var conflictingExposedLabels labels.Labels
+		// 抓取到的Label Name前加上"exported_"前缀，保持服务端Label Name不变
 		for _, l := range targetLabels {
 			existingValue := lset.Get(l.Name)
 			if existingValue != "" {
@@ -727,8 +732,11 @@ func appender(app storage.Appender, limit int) storage.Appender {
 
 // A scraper retrieves samples and accepts a status report at the end.
 type scraper interface {
+	// 从target抓取时序数据并写入指定的writer中
 	scrape(ctx context.Context, w io.Writer) (string, error)
+	// 更新最近一次抓取target监控的状态信息
 	Report(start time.Time, dur time.Duration, err error)
+	// 计算prometheus server第一次从target抓取监控数据的时间
 	offset(interval time.Duration, jitterSeed uint64) time.Duration
 }
 
@@ -739,7 +747,7 @@ type targetScraper struct {
 	client  *http.Client
 	req     *http.Request
 	timeout time.Duration
-
+	// 如果HTTP相应是gzip压缩过的，需要使用gzip.Reader进行解压读取
 	gzipr *gzip.Reader
 	buf   *bufio.Reader
 
@@ -783,6 +791,7 @@ func (s *targetScraper) scrape(ctx context.Context, w io.Writer) (string, error)
 		s.bodySizeLimit = math.MaxInt64
 	}
 	if resp.Header.Get("Content-Encoding") != "gzip" {
+		// 如果不是gzip压缩，直接将HTTP响应体写到指定的io.Writer中
 		n, err := io.Copy(w, io.LimitReader(resp.Body, s.bodySizeLimit))
 		if err != nil {
 			return "", err
@@ -819,8 +828,9 @@ func (s *targetScraper) scrape(ctx context.Context, w io.Writer) (string, error)
 	return resp.Header.Get("Content-Type"), nil
 }
 
-// A loop can run and be stopped again. It must not be reused after it was stopped.
+// loop实例只能启动一次，如果停止了，不可以重新启动
 type loop interface {
+	// 定期向target发起HTTP请求，抓取监控数据并将结果写到底层存储中
 	run(errc chan<- error)
 	setForcedError(err error)
 	stop()
@@ -829,17 +839,24 @@ type loop interface {
 }
 
 type cacheEntry struct {
+	// 时序在底层存储的编号
 	ref      storage.SeriesRef
+	// 最后一次出现的抓取周期
 	lastIter uint64
+	// Label集合的hash值
 	hash     uint64
+	// 时序的Label集合
 	lset     labels.Labels
 }
 
 type scrapeLoop struct {
+	// 记录关联的targetScraper实例
 	scraper         scraper
 	l               log.Logger
+	// 时序元数据的缓存
 	cache           *scrapeCache
 	lastScrapeSize  int
+	// 一个scrapePool下的所有scrapeLoop共享一个Pool实例
 	buffers         *pool.Pool
 	jitterSeed      uint64
 	honorTimestamps bool
@@ -850,12 +867,16 @@ type scrapeLoop struct {
 	interval        time.Duration
 	timeout         time.Duration
 
+	// 向底层存储写时序数据
 	appender            func(ctx context.Context) storage.Appender
+	// 会触发Relabel操作
 	sampleMutator       labelsMutator
 	reportSampleMutator labelsMutator
 
 	parentCtx context.Context
+	// 监听scrapePool是否停止
 	ctx       context.Context
+	// scrapeCtx关联的cancel函数
 	cancel    func()
 	stopped   chan struct{}
 
@@ -868,23 +889,20 @@ type scrapeLoop struct {
 // storage references. Additionally, it tracks staleness of series between
 // scrapes.
 type scrapeCache struct {
-	iter uint64 // Current scrape iteration.
+	// 抓取周期
+	iter uint64
 
-	// How many series and metadata entries there were at the last success.
 	successfulCount int
 
-	// Parsed string to an entry with information about the actual label set
-	// and its storage reference.
+	// key为时序的Label集合构成的字符串
 	series map[string]*cacheEntry
 
-	// Cache of dropped metric strings and their iteration. The iteration must
-	// be a pointer so we can update it without setting a new entry with an unsafe
-	// string in addDropped().
+	// 记录已经删除的时序
 	droppedSeries map[string]*uint64
 
-	// seriesCur and seriesPrev store the labels of series that were seen
-	// in the current and previous scrape.
-	// We hold two maps and swap them out to save allocations.
+	// 记录两次抓取得到的时序。每次抓取周期结束的时候会比较两个集合
+	// 如果时序在上一个抓取周期出现，而这次周期不存在，
+	// 则向底层存储中写"StaleNaN"时序点-标识时序已经过期
 	seriesCur  map[uint64]labels.Labels
 	seriesPrev map[uint64]labels.Labels
 
@@ -894,7 +912,8 @@ type scrapeCache struct {
 
 // metaEntry holds meta information about a metric.
 type metaEntry struct {
-	lastIter uint64 // Last scrape iteration the entry was observed at.
+	// metric最近一次出现的抓取周期
+	lastIter uint64
 	typ      textparse.MetricType
 	help     string
 	unit     string
@@ -933,9 +952,7 @@ func (c *scrapeCache) iterDone(flushCache bool) {
 	}
 
 	if flushCache {
-		// All caches may grow over time through series churn
-		// or multiple string representations of the same metric. Clean up entries
-		// that haven't appeared in the last scrape.
+		// 遍历缓存的时序，清理掉上次抓取不存在的时序
 		for s, e := range c.series {
 			if c.iter != e.lastIter {
 				delete(c.series, s)
@@ -948,17 +965,18 @@ func (c *scrapeCache) iterDone(flushCache bool) {
 		}
 		c.metaMtx.Lock()
 		for m, e := range c.metadata {
-			// Keep metadata around for 10 scrapes after its metric disappeared.
+			// 如果一个metric连续10个抓取周期没出现，则清理掉元数据缓存
 			if c.iter-e.lastIter > 10 {
 				delete(c.metadata, m)
 			}
 		}
 		c.metaMtx.Unlock()
 
+		// 更新抓取周期
 		c.iter++
 	}
 
-	// Swap current and previous series.
+	// 这里cur好像没有必要赋值了？
 	c.seriesPrev, c.seriesCur = c.seriesCur, c.seriesPrev
 
 	// We have to delete every single key in the map.
@@ -1157,6 +1175,7 @@ func newScrapeLoop(ctx context.Context,
 }
 
 func (sl *scrapeLoop) run(errc chan<- error) {
+	// 等待初次从Target抓取时序数据
 	select {
 	case <-time.After(sl.scraper.offset(sl.interval, sl.jitterSeed)):
 		// Continue after a scraping offset.
@@ -1234,6 +1253,7 @@ func (sl *scrapeLoop) scrapeAndReport(last, appendTime time.Time, errc chan<- er
 		)
 	}
 
+	// 根据上次抓取时返回的数据量，从buffers池中获取大小合适的buffer
 	b := sl.buffers.Get(sl.lastScrapeSize).([]byte)
 	defer sl.buffers.Put(b)
 	buf := bytes.NewBuffer(b)
@@ -1254,6 +1274,7 @@ func (sl *scrapeLoop) scrapeAndReport(last, appendTime time.Time, errc chan<- er
 	}()
 
 	defer func() {
+		// 更新target状态
 		if err = sl.report(app, appendTime, time.Since(start), total, added, seriesAdded, bytes, scrapeErr); err != nil {
 			level.Warn(sl.l).Log("msg", "Appending scrape report failed", "err", err)
 		}
@@ -1276,6 +1297,7 @@ func (sl *scrapeLoop) scrapeAndReport(last, appendTime time.Time, errc chan<- er
 
 	var contentType string
 	scrapeCtx, cancel := context.WithTimeout(sl.parentCtx, sl.timeout)
+	// 从对应target抓取时序数据，最终写到buf缓冲区中
 	contentType, scrapeErr = sl.scraper.scrape(scrapeCtx, buf)
 	cancel()
 
@@ -1285,6 +1307,7 @@ func (sl *scrapeLoop) scrapeAndReport(last, appendTime time.Time, errc chan<- er
 		// that occasionally returned empty results. We don't want those
 		// to falsely reset our buffer size.
 		if len(b) > 0 {
+			// 统计抓取到的字节数
 			sl.lastScrapeSize = len(b)
 		}
 		bytes = len(b)
@@ -1418,6 +1441,7 @@ type appendErrors struct {
 }
 
 func (sl *scrapeLoop) append(app storage.Appender, b []byte, contentType string, ts time.Time) (total, added, seriesAdded int, err error) {
+	// 将抓取到的字符串解析为Prometheus内部实例
 	p, warning := textparse.New(b, contentType)
 	if warning != nil {
 		level.Debug(sl.l).Log(
@@ -1460,25 +1484,31 @@ loop:
 		}
 		switch et {
 		case textparse.EntryType:
+			// 更新缓存中metric的类型
 			sl.cache.setType(p.Type())
 			continue
 		case textparse.EntryHelp:
+			// 更新缓存中metric的描述信息
 			sl.cache.setHelp(p.Help())
 			continue
 		case textparse.EntryUnit:
+			// 更新缓存中metric的单位
 			sl.cache.setUnit(p.Unit())
 			continue
 		case textparse.EntryComment:
+			// 忽视注释信息
 			continue
 		default:
 		}
 		total++
 
 		t := defTime
+		// 获取时序信息
 		met, tp, v := p.Series()
 		if !sl.honorTimestamps {
 			tp = nil
 		}
+		// 时间戳覆盖
 		if tp != nil {
 			t = *tp
 		}
@@ -1486,6 +1516,7 @@ loop:
 		if sl.cache.getDropped(yoloString(met)) {
 			continue
 		}
+		// 从cache中找时序对应的元数据
 		ce, ok := sl.cache.get(yoloString(met))
 		var (
 			ref  storage.SeriesRef
@@ -1498,14 +1529,14 @@ loop:
 			ref = ce.ref
 			lset = ce.lset
 		} else {
+			// metric对应的Label Name是"__name__"
+			// 返回值是由时序的全部Label构成的字符串，可以唯一标识一条时序
 			mets = p.Metric(&lset)
 			hash = lset.Hash()
 
-			// Hash label set as it is seen local to the target. Then add target labels
-			// and relabeling and store the final label set.
+			// relabel操作，返回时序最终持久化的Label集合
 			lset = sl.sampleMutator(lset)
 
-			// The label set may be set to nil to indicate dropping.
 			if lset == nil {
 				sl.cache.addDropped(mets)
 				continue
@@ -1523,6 +1554,7 @@ loop:
 			}
 		}
 
+		// 时序点写到底层存储，返回时序编号
 		ref, err = app.Append(ref, lset, t, v)
 		sampleAdded, err = sl.checkAddError(ce, met, tp, err, &sampleLimitErr, &appErrs)
 		if err != nil {
@@ -1537,6 +1569,7 @@ loop:
 				// Bypass staleness logic if there is an explicit timestamp.
 				sl.cache.trackStaleness(hash, lset)
 			}
+			// 添加元数据缓存
 			sl.cache.addRef(mets, ref, lset, hash)
 			if sampleAdded && sampleLimitErr == nil {
 				seriesAdded++
@@ -1581,6 +1614,7 @@ loop:
 		level.Warn(sl.l).Log("msg", "Error on ingesting out-of-order exemplars", "num_dropped", appErrs.numExemplarOutOfOrder)
 	}
 	if err == nil {
+		// 过期的数据向底层存储写StaleNaN
 		sl.cache.forEachStale(func(lset labels.Labels) bool {
 			// Series no longer exposed, mark it stale.
 			_, err = app.Append(0, lset, defTime, math.Float64frombits(value.StaleNaN))

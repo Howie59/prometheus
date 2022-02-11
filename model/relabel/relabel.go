@@ -196,6 +196,7 @@ func Process(labels labels.Labels, cfgs ...*Config) labels.Labels {
 func relabel(lset labels.Labels, cfg *Config) labels.Labels {
 	values := make([]string, 0, len(cfg.SourceLabels))
 	for _, ln := range cfg.SourceLabels {
+		// 参与Relabel操作的Label Value
 		values = append(values, lset.Get(string(ln)))
 	}
 	val := strings.Join(values, cfg.Separator)
@@ -204,10 +205,12 @@ func relabel(lset labels.Labels, cfg *Config) labels.Labels {
 
 	switch cfg.Action {
 	case Drop:
+		// 如果Label Value符合指定的正则表达式，则过滤掉该时序
 		if cfg.Regex.MatchString(val) {
 			return nil
 		}
 	case Keep:
+		// 如果不符合正则表达式，则过滤掉时序
 		if !cfg.Regex.MatchString(val) {
 			return nil
 		}
@@ -217,6 +220,7 @@ func relabel(lset labels.Labels, cfg *Config) labels.Labels {
 		if indexes == nil {
 			break
 		}
+		// 未查找到匹配的Label Value，则这次Relabel操作结束
 		target := model.LabelName(cfg.Regex.ExpandString([]byte{}, cfg.TargetLabel, val, indexes))
 		if !target.IsValid() {
 			lb.Del(cfg.TargetLabel)

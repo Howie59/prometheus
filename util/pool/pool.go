@@ -20,15 +20,18 @@ import (
 )
 
 // Pool is a bucketed pool for variably sized byte slices.
+// Pool 存储不同大小slice的桶
 type Pool struct {
+	// 每个bucket分区对应的sync.pool实例
 	buckets []sync.Pool
+	// 每个bucket分区中buffer缓冲区的大小
 	sizes   []int
-	// make is the function used to create an empty slice when none exist yet.
+	// 如果分区中buffer缓冲区耗尽或者没有找到合适的bucket分区来获取，
+	// 会通过这个函数新建buffer缓冲区并返回给调用方
 	make func(int) interface{}
 }
 
-// New returns a new Pool with size buckets for minSize to maxSize
-// increasing by the given factor.
+// factor为递增比例
 func New(minSize, maxSize int, factor float64, makeFunc func(int) interface{}) *Pool {
 	if minSize < 1 {
 		panic("invalid minimum pool size")
@@ -42,6 +45,7 @@ func New(minSize, maxSize int, factor float64, makeFunc func(int) interface{}) *
 
 	var sizes []int
 
+	// 计算每个bucket分区存储的buffer大小
 	for s := minSize; s <= maxSize; s = int(float64(s) * factor) {
 		sizes = append(sizes, s)
 	}
@@ -67,6 +71,7 @@ func (p *Pool) Get(sz int) interface{} {
 		}
 		return b
 	}
+	// 申请的buffer太大没有合适的bucket分区，直接通过make新建缓冲区
 	return p.make(sz)
 }
 
