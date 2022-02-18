@@ -165,12 +165,17 @@ type QueryEngine interface {
 // API can register a set of endpoints in a router and handle
 // them using the provided storage and query engine.
 type API struct {
+	// storage对外提供的统一接口，通过这个实例可以获取相应的Queryable实例，获取Querier实例执行查询
 	Queryable         storage.SampleAndChunkQueryable
+	// PromQL语句引擎
 	QueryEngine       QueryEngine
 	ExemplarQueryable storage.ExemplarQueryable
 
+	// 定义了获取Target信息的方法
 	targetRetriever       func(context.Context) TargetRetriever
+	// prometheus通过notifier和alertManager交互
 	alertmanagerRetriever func(context.Context) AlertmanagerRetriever
+	// 定义了查询Rule信息的接口
 	rulesRetriever        func(context.Context) RulesRetriever
 	now                   func() time.Time
 	config                func() config.Config
@@ -180,6 +185,7 @@ type API struct {
 
 	db          TSDBAdminStats
 	dbDir       string
+	// 是否开启prometheus server提供的管理员功能
 	enableAdmin bool
 	logger      log.Logger
 	CORSOrigin  *regexp.Regexp
@@ -377,6 +383,7 @@ func (api *API) query(r *http.Request) (result apiFuncResult) {
 		defer cancel()
 	}
 
+	// 解析查询语句，封装成Query实例
 	qry, err := api.QueryEngine.NewInstantQuery(api.Queryable, r.FormValue("query"), ts)
 	if err != nil {
 		return invalidParamError(err, "query")
@@ -433,8 +440,7 @@ func (api *API) queryRange(r *http.Request) (result apiFuncResult) {
 		return invalidParamError(errors.New("zero or negative query resolution step widths are not accepted. Try a positive integer"), "step")
 	}
 
-	// For safety, limit the number of returned points per timeseries.
-	// This is sufficient for 60s resolution for a week or 1h resolution for a year.
+	// 控制每条时序返回的个数，可以在60s精度下查询一周数据，或在1h精度下查询一年的数据
 	if end.Sub(start)/step > 11000 {
 		err := errors.New("exceeded maximum resolution of 11,000 points per timeseries. Try decreasing the query resolution (?step=XX)")
 		return apiFuncResult{nil, &apiError{errorBadData, err}, nil, nil}

@@ -89,6 +89,7 @@ type Querier interface {
 	// Select returns a set of series that matches the given label matchers.
 	// Caller can specify if it requires returned series to be sorted. Prefer not requiring sorting for better performance.
 	// It allows passing hints that can help in optimising select, but it's up to implementation how this is used if used at all.
+	// 查询时序
 	Select(sortSeries bool, hints *SelectHints, matchers ...*labels.Matcher) SeriesSet
 }
 
@@ -180,6 +181,7 @@ type Appender interface {
 	// to Append() at any point. Adding the sample via Append() returns a new
 	// reference number.
 	// If the reference is 0 it must not be used for caching.
+	// 向底层存储写入时序点
 	Append(ref SeriesRef, l labels.Labels, t int64, v float64) (SeriesRef, error)
 
 	// Commit submits the collected samples and purges the batch. If Commit

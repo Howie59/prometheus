@@ -56,8 +56,9 @@ type Storage struct {
 
 	rws *WriteStorage
 
-	// For reads.
+	// 远端存储也实现了Queryable接口，用于从远端存储查询时序数据
 	queryables             []storage.SampleAndChunkQueryable
+	// 获取本地存储的最小时间戳
 	localStartTimeCallback startTimeCallback
 }
 

@@ -115,9 +115,9 @@ type Query interface {
 	Exec(ctx context.Context) *Result
 	// Close recovers memory used by the query result.
 	Close()
-	// Statement returns the parsed statement of the query.
+	// Statement 返回解析后的查询语句
 	Statement() parser.Statement
-	// Stats returns statistics about the lifetime of the query.
+	// Stats 获取查询的监控信息
 	Stats() *stats.QueryTimers
 	// Cancel signals that a running query execution should be aborted.
 	Cancel()

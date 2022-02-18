@@ -28,7 +28,9 @@ import (
 type fanout struct {
 	logger log.Logger
 
+	// 本地存储
 	primary     Storage
+	// 远端存储
 	secondaries []Storage
 }
 
@@ -115,7 +117,9 @@ func (f *fanout) ChunkQuerier(ctx context.Context, mint, maxt int64) (ChunkQueri
 }
 
 func (f *fanout) Appender(ctx context.Context) Appender {
+	// 获取本地存储关联的Appender实例
 	primary := f.primary.Appender(ctx)
+	// 获取远端存储关联的Appender实例
 	secondaries := make([]Appender, 0, len(f.secondaries))
 	for _, storage := range f.secondaries {
 		secondaries = append(secondaries, storage.Appender(ctx))
@@ -159,11 +163,13 @@ func (f *fanoutAppender) Append(ref SeriesRef, l labels.Labels, t int64, v float
 }
 
 func (f *fanoutAppender) AppendExemplar(ref SeriesRef, l labels.Labels, e exemplar.Exemplar) (SeriesRef, error) {
+	// 时序点写入本地存储
 	ref, err := f.primary.AppendExemplar(ref, l, e)
 	if err != nil {
 		return ref, err
 	}
 
+	// 时序点写入全部远端存储
 	for _, appender := range f.secondaries {
 		if _, err := appender.AppendExemplar(ref, l, e); err != nil {
 			return 0, err
