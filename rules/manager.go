@@ -242,22 +242,31 @@ type Rule interface {
 
 // Group is a set of rules that have a logical relation.
 type Group struct {
+	// 配置名称
 	name                 string
+	// 配置文件名
 	file                 string
 	interval             time.Duration
 	limit                int
+	// group下面管理的全部Rule实例
 	rules                []Rule
+	// 记录每个Rule实例上次执行返回的时序信息
 	seriesInPreviousEval []map[string]labels.Labels // One per Rule.
+	// TODO：没搞懂这个是啥
 	staleSeries          []labels.Labels
 	opts                 *ManagerOptions
 	mtx                  sync.Mutex
+	// 下次执行的时间
 	evaluationTime       time.Duration
+	// 上一次执行时间
 	lastEvaluation       time.Time
 
 	shouldRestore bool
-
+	// 标记是否结束
 	markStale   bool
+	// 停止Group实例会调用stop()方法，其中会关闭done通道并阻塞等待terminated通道的关闭
 	done        chan struct{}
+	// 退出的时候关闭terminated通道
 	terminated  chan struct{}
 	managerDone chan struct{}
 
@@ -365,6 +374,7 @@ func (g *Group) run(ctx context.Context) {
 		g.Eval(ctx, evalTimestamp)
 		timeSinceStart := time.Since(start)
 
+		// 作为新指标项上报
 		g.metrics.IterationDuration.Observe(timeSinceStart.Seconds())
 		g.setEvaluationTime(timeSinceStart)
 		g.setLastEvaluation(start)
@@ -409,12 +419,16 @@ func (g *Group) run(ctx context.Context) {
 		case <-g.done:
 			return
 		case <-tick.C:
+			// 反映是否存在slow rule
 			missed := (time.Since(evalTimestamp) / g.interval) - 1
 			if missed > 0 {
+				// 如果group运行较慢
 				g.metrics.IterationsMissed.WithLabelValues(GroupKey(g.file, g.name)).Add(float64(missed))
 				g.metrics.IterationsScheduled.WithLabelValues(GroupKey(g.file, g.name)).Add(float64(missed))
 			}
+			// 校正时间
 			evalTimestamp = evalTimestamp.Add((missed + 1) * g.interval)
+			// 执行Group中的所有Rule
 			iter()
 		}
 
@@ -624,6 +638,7 @@ func (g *Group) Eval(ctx context.Context, ts time.Time) {
 
 			g.metrics.EvalTotal.WithLabelValues(GroupKey(g.File(), g.Name())).Inc()
 
+			// 查询出对应的vector
 			vector, err := rule.Eval(ctx, ts, g.opts.QueryFunc, g.opts.ExternalURL, g.Limit())
 			if err != nil {
 				rule.SetHealth(HealthBad)
@@ -641,6 +656,8 @@ func (g *Group) Eval(ctx context.Context, ts time.Time) {
 			rule.SetLastError(nil)
 			samplesTotal += float64(len(vector))
 
+			// 如果查询出现异常，则记录相应的监控并返回
+			// 如果是Alerting Rule实例，则通过sendAlerts方法向AlertManager发送告警的相关信息
 			if ar, ok := rule.(*AlertingRule); ok {
 				ar.sendAlerts(ctx, ts, g.opts.ResendDelay, g.interval, g.opts.NotifyFunc)
 			}
@@ -664,6 +681,7 @@ func (g *Group) Eval(ctx context.Context, ts time.Time) {
 			}()
 
 			for _, s := range vector {
+				// 遍历vector中的点，并写入底层存储
 				if _, err := app.Append(0, s.Metric, s.T, s.V); err != nil {
 					rule.SetHealth(HealthBad)
 					rule.SetLastError(err)
@@ -690,6 +708,7 @@ func (g *Group) Eval(ctx context.Context, ts time.Time) {
 				level.Warn(g.logger).Log("name", rule.Name(), "index", i, "msg", "Error on ingesting results from rule evaluation with different value but same timestamp", "numDropped", numDuplicates)
 			}
 
+			// 如果某条时序上次查询的时候出现了，但是此次没有出现，则为其写入一个特殊标识
 			for metric, lset := range g.seriesInPreviousEval[i] {
 				if _, ok := seriesReturned[metric]; !ok {
 					// Series no longer exposed, mark it stale.
@@ -879,9 +898,12 @@ func (g *Group) Equals(ng *Group) bool {
 
 // The Manager manages recording and alerting rules.
 type Manager struct {
+	// Manager 实例使用到的其他模块，例如storage, notify...
 	opts     *ManagerOptions
+	// key由Group的名称及其所在的配置文件组成
 	groups   map[string]*Group
 	mtx      sync.RWMutex
+	// Prometheus Server初始化完成之后会关闭该Channel，Manager在监听到该Channel的关闭之后会启动其管理的rules.Group实例
 	block    chan struct{}
 	done     chan struct{}
 	restored bool
@@ -961,12 +983,12 @@ func (m *Manager) Stop() {
 	level.Info(m.logger).Log("msg", "Rule manager stopped")
 }
 
-// Update the rule manager's state as the config requires. If
-// loading the new rules failed the old rule set is restored.
+// Update 加载Rule配置文件并进行解析，如果设置失败就把它恢复为之前的
 func (m *Manager) Update(interval time.Duration, files []string, externalLabels labels.Labels, externalURL string, ruleGroupPostProcessFunc RuleGroupPostProcessFunc) error {
 	m.mtx.Lock()
 	defer m.mtx.Unlock()
 
+	// 加载并解析Rule配置文件，最终得到rules.Group实例集合
 	groups, errs := m.LoadGroups(interval, externalLabels, externalURL, ruleGroupPostProcessFunc, files...)
 
 	if errs != nil {
@@ -978,12 +1000,14 @@ func (m *Manager) Update(interval time.Duration, files []string, externalLabels 
 	m.restored = true
 
 	var wg sync.WaitGroup
+	// 启动新的rules.Group实例
 	for _, newg := range groups {
 		// If there is an old group with the same identifier,
 		// check if new group equals with the old group, if yes then skip it.
 		// If not equals, stop it and wait for it to finish the current iteration.
 		// Then copy it into the new group.
 		gn := GroupKey(newg.file, newg.name)
+		// 查找并删除原有的rules.Group实例
 		oldg, ok := m.groups[gn]
 		delete(m.groups, gn)
 
@@ -995,23 +1019,26 @@ func (m *Manager) Update(interval time.Duration, files []string, externalLabels 
 		wg.Add(1)
 		go func(newg *Group) {
 			if ok {
+				// 停止原有的rules.Group实例
 				oldg.stop()
+				// 复制原有rules.Group实例的状态信息
 				newg.CopyState(oldg)
 			}
+			// 通过将wg.Done提前减少了一个goroutine，这个优化挺妙
 			wg.Done()
-			// Wait with starting evaluation until the rule manager
-			// is told to run. This is necessary to avoid running
-			// queries against a bootstrapping storage.
+			// 监听block通道关闭，即等待prometheus server初始化完成
 			<-m.block
+			// 开始周期性执行PromQL语句
 			newg.run(m.opts.Context)
 		}(newg)
 	}
 
-	// Stop remaining old groups.
+	// 停止原有的rules.Group实例
 	wg.Add(len(m.groups))
 	for n, oldg := range m.groups {
 		go func(n string, g *Group) {
 			g.markStale = true
+			// 若Group对应的配置没有出现在新的Rule配置文件中，则将其关闭
 			g.stop()
 			if m := g.metrics; m != nil {
 				m.IterationsMissed.DeleteLabelValues(n)
@@ -1059,6 +1086,7 @@ func (m *Manager) LoadGroups(
 	shouldRestore := !m.restored
 
 	for _, fn := range filenames {
+		// 加载ruleGroup
 		rgs, errs := m.opts.GroupLoader.Load(fn)
 		if errs != nil {
 			return nil, errs
@@ -1072,6 +1100,7 @@ func (m *Manager) LoadGroups(
 
 			rules := make([]Rule, 0, len(rg.Rules))
 			for _, r := range rg.Rules {
+				// 解析promQL语句，结果为表达式树
 				expr, err := m.opts.GroupLoader.Parse(r.Expr.Value)
 				if err != nil {
 					return nil, []error{errors.Wrap(err, fn)}

@@ -19,7 +19,7 @@ import (
 	"html/template"
 	"net/url"
 	"sync"
-	"time"
+	`time`
 
 	yaml "gopkg.in/yaml.v2"
 
@@ -32,18 +32,21 @@ import (
 
 // A RecordingRule records its vector expression into new timeseries.
 type RecordingRule struct {
+	// 名称
 	name   string
+	// PromQL语句解析得到的表达式
 	vector parser.Expr
+	// 在产生的新时序将会追加(或覆盖)这里的Label
 	labels labels.Labels
 	// Protects the below.
 	mtx sync.Mutex
-	// The health of the recording rule.
+	// 当前实例是否正常执行
 	health RuleHealth
-	// Timestamp of last evaluation of the recording rule.
+	// 下次执行的时间
 	evaluationTimestamp time.Time
-	// The last error seen by the recording rule.
+	// 上次遇到的error
 	lastError error
-	// Duration of how long it took to evaluate the recording rule.
+	// 此次执行的时长
 	evaluationDuration time.Duration
 }
 

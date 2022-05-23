@@ -116,9 +116,12 @@ func (g *RuleGroups) Validate(node ruleGroups) (errs []error) {
 
 // RuleGroup is a list of sequentially evaluated recording and alerting rules.
 type RuleGroup struct {
+	// 名称
 	Name     string         `yaml:"name"`
+	// 执行周期
 	Interval model.Duration `yaml:"interval,omitempty"`
 	Limit    int            `yaml:"limit,omitempty"`
+	// RuleGroup下面的全部Rule实例
 	Rules    []RuleNode     `yaml:"rules"`
 }
 
@@ -134,11 +137,19 @@ type Rule struct {
 
 // RuleNode adds yaml.v3 layer to support line and column outputs for invalid rules.
 type RuleNode struct {
+	// metric名称
 	Record      yaml.Node         `yaml:"record,omitempty"`
+	// 告警名称
 	Alert       yaml.Node         `yaml:"alert,omitempty"`
+	// 定时执行的PromQL语句
 	Expr        yaml.Node         `yaml:"expr"`
+	// 只有Alerting Rule才会用到的字段。告警持续时间超过该字段指定的时长就会切换成Fire状态
 	For         model.Duration    `yaml:"for,omitempty"`
+	// 用户自定义的Label
+	//   如果当前是Recording Rule，则会将Label追加到新产生的时序里面
+	// 	 如果当前是Alerting Rule，则向AlertManager发送告警信息的时候携带用户自定义的Label
 	Labels      map[string]string `yaml:"labels,omitempty"`
+	// 向AlertingManager发送告警信息的时候会携带附加信息，该map里面的value可以使用模板
 	Annotations map[string]string `yaml:"annotations,omitempty"`
 }
 

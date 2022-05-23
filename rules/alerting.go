@@ -78,6 +78,7 @@ func (s AlertState) String() string {
 
 // Alert is the user-level representation of a single instance of an alerting rule.
 type Alert struct {
+	// 当前报警状态
 	State AlertState
 
 	Labels      labels.Labels
@@ -113,12 +114,11 @@ type AlertingRule struct {
 	name string
 	// The vector expression from which to generate alerts.
 	vector parser.Expr
-	// The duration for which a labelset needs to persist in the expression
-	// output vector before an alert transitions from Pending to Firing state.
+	// 对应Rule配置中的For配置项，如果告警的持续时间超过该字段指定的时长，就会切换到Firing状态
 	holdDuration time.Duration
 	// Extra labels to attach to the resulting alert sample vectors.
 	labels labels.Labels
-	// Non-identifying key/value pairs.
+	// 告警的描述信息，以Label形式追加到时序中，其中的Label Value可以使用模板
 	annotations labels.Labels
 	// External labels from the global config.
 	externalLabels map[string]string
@@ -516,6 +516,7 @@ func (r *AlertingRule) ForEachActiveAlert(f func(*Alert)) {
 
 func (r *AlertingRule) sendAlerts(ctx context.Context, ts time.Time, resendDelay, interval time.Duration, notifyFunc NotifyFunc) {
 	alerts := []*Alert{}
+	// 这块代码封装的不错
 	r.ForEachActiveAlert(func(alert *Alert) {
 		if alert.needsSending(ts, resendDelay) {
 			alert.LastSentAt = ts
